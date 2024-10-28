@@ -1,0 +1,144 @@
+---
+title: "Module 5 Sharks"
+author: "Team 1 Tech Trio"
+date: "2024-10-22"
+output:
+  html_document: default
+bibliography: BIOL3140.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(geomorph)
+library(abind)
+library(phytools)
+library(parallel)
+shark_dat <- read_csv("shark_data.csv")
+f <- list.files("shark_points",full.names = T,pattern=".csv")
+```
+
+
+# Introduction
+
+   Habitat shapes species' morphology, as organisms adapt to different environments. Morphospace, representing the range of shapes species can occupy, helps visualize these differences. Studies show that species in distinct habitats, like benthic vs. pelagic, exhibit significant morphological variation due to ecological pressures (@Compagno1984 @Grogan2012 @Sternes2020). Furthermore, the rate of morphological evolution may vary between habitats, with some fostering faster evolutionary changes (@Stein2018).
+
+  This study addresses two questions: (1) Does habitat influence morphospace occupation? (2) Do species from different habitats evolve at different rates? To answer this, we use PCA of Procrustes-aligned landmark data to compare morphospace and assess morphological disparity and evolutionary rates across habitats. This project aims to provide insight into how ecological niches affect morphology's evolution in the selected shark species. 
+
+
+# Methods
+
+   To determine whether habitat affects morphospace occupation and morphological evolution rates, we analyzed landmark data from seven species. The body shapes of multiple shark species were digitized using landmark-based geometric morphometrics, with the 14 points digitized as such. 
+
+<center>
+![14 Landmarks Digitized on Each Shark Specimin.](https://bcorgbio.github.io/class/shark_points.png)
+</center>
+
+  A dataset was established using all digitized specimens, using Procrustes alignment to remove differences in size, rotation, and position, standardizing the shapes for comparison (@Sternes2020). A principal components analysis (PCA) was then conducted to visualize how species from different habitats occupy morphospace, focusing on the first two principal components (@Grogan2012).
+
+  To assess morphological disparity within habitats, we used the morphol.disparity function to quantify shape variation (@Thomson1977). We also applied the compare.evol.rates function across 500 phylogenetic trees to calculate evolutionary rates, leveraging parallel computing for efficiency. Finally, a two-sided t-test compared the evolutionary rates between benthic and pelagic habitats to test for significant differences.
+
+
+# Results 
+
+  Procrustes Alignment of Digitized Specimens Visualization
+<center>
+```{r, 1, echo=FALSE, fig.cap="Procrustes Alignment of Shark Morphological Shape Coordinates by Species. "}
+xy <- read_csv(f,id="file") %>% 
+  select(file,X,Y) %>% 
+  mutate(Y=abs(Y-max(Y))) %>% 
+  mutate(file_name=gsub("*_.csv","",basename(file))) %>% 
+  left_join(shark_dat)
+ldk_l <- list()
+shark_sp <- xy$sp %>% unique()
+for (i in shark_sp) {
+  ldk_l[[i]] <- xy %>%
+    filter(sp == i) %>%
+    select(X, Y)
+}
+
+ldk <- abind(ldk_l, along = 3)
+dimnames(ldk)[[3]] <- names(ldk_l)
+ldk_al <- gpagen(ldk)
+plot(ldk_al)
+```
+</center>
+
+## Morphospace Based on PCA
+ Based on the graph, there is some clustering based on habitat. The graph suggests that benthic sharks may have less morphological variability compared to pelagic sharks, which occupy a wider range of morphospace.
+<center>
+```{r, 2, echo=FALSE, fig.cap="Principle Component Analysis of Shark Morphology Based on Habitat, Using 2 Principle Components."}
+pca <- gm.prcomp(ldk_al$coords)
+PCA <- pca$x %>% 
+  data.frame %>% 
+  select(Comp1:Comp4) %>% 
+  mutate(sp = rownames(pca$x)) %>%  
+  left_join(shark_dat)
+PCA %>%
+  ggplot(aes(Comp1, Comp2, col = habitat)) + geom_point() +
+  labs(title = "PCA of Shark Morphology")        
+```
+</center>
+
+# Morphological Disparity
+The morphological disparity between habitats was assessed, yielding a p-value of .5778422, indicating there is no statistically significant difference in variances in morphology between these two habitat groups The pairwise absolute differences between groups suggest they are not substantially different in terms of morphological disparity, Based on the Procrustes variance values, there is some degree of shape variation within each habitats, but the benthic sharks have a higher variance and more diverse morphology. 
+  Overall, there is no statistically significant morphological disparity between benthic and pelagic habitat groups. 
+
+
+```{r,3, echo=FALSE, fig.cap="Comparison of Morphological Disparity between Benthic and Pelagic Sharks."  }
+gdf <- geomorph.data.frame(ldk_al, habitat = PCA$habitat)
+md <- morphol.disparity(coords ~ 1, groups = ~ habitat, data = gdf, iter = 10000, print.progress = FALSE)
+summary(md)
+```
+
+# Morphological Evolution
+  Based on the visual aid and the T-test performed on the data, the rate of morphological evolution is significantly different between benthic and pelagic habitats. Benthic sharks evolve at a significantly higher rate than pelagic sharks, with a highly significant p-value indicating that this difference is unlikely to be due to random chance.
+
+<center>
+```{r,4, echo=FALSE, cache=T, fig.cap="Rates of Morphological Evolution in Shark Morphology by Habitat."}
+phy <- readNexus("shark_trees.nex")
+phy2 <- keep.tip(phy, PCA$sp)
+gp_hab <- PCA$habitat
+names(gp_hab) <- PCA$sp
+
+er <- compare.evol.rates(A = ldk_al$coords, phy = phy2[[1]], method = "simulation", gp = gp_hab, print.progress = FALSE)
+
+set.seed(1234)
+phy_sample <- sample(phy2, 500)
+
+er_fun <- function(x) {
+  er <- compare.evol.rates(A = ldk_al$coords, phy = x, method = "simulation", gp = gp_hab)
+  return(er)
+}
+
+er_l <- mclapply(phy_sample, er_fun, mc.cores = detectCores() - 2)
+
+er <- lapply(er_l, function(x) {
+  er_ <- c(x$sigma.d.gp, x$sigma.d.ratio)
+  names(er_)[3] <- "ratio"
+  return(er_)
+}) %>% do.call(rbind, .) %>% data.frame()
+
+er %>% 
+  pivot_longer(benthic:pelagic) %>% 
+  ggplot(aes(name, value)) + 
+  geom_boxplot() +
+  labs(title = "Rates of Morphological Evolution by Habitat")
+```
+</center>
+
+```{r,5, echo=FALSE, fig.cap="Statistical Signifigance."}
+t_test_results <- t.test(er$benthic, er$pelagic)
+print(t_test_results)
+```
+
+# Discussion
+   The results of this study highlight a significant difference in the rate of morphological evolution between benthic and pelagic shark species. Our evolutionary rate analyses, performed across 500 phylogenetic trees, revealed that benthic sharks exhibit faster morphological changes compared to pelagic species, supported by a highly significant p-value. This suggests that benthic environments may impose stronger selective pressures or allow for greater morphological diversification, potentially due to the varied substrates and complex structures found in benthic habitats. These findings align with a previous study conducted by (@Irschick2017), which analyzed body and fin shape among eight groups of Atlantic sharks. They concluded that the most significant variable distinguishing species was variation in body length, which is mainly affected by variation in diet and habitat. Our analysis was on a broader scale, but both studies indicate that habitat can drive distinct evolutionary dynamics, reinforcing the hypothesis that environmental context influences evolutionary rates.
+
+  Conversely, analyses of morphological disparity did not reveal significant differences between the two habitat groups. Despite a broader morphospace occupation by pelagic sharks in the PCA plot, morphol.disparity tests indicated similar levels of shape variation within each group. This result suggests that while benthic and pelagic habitats drive different rates of morphological evolution, they may not necessarily lead to substantial differences in the range of morphological diversity within each habitat group. Together, these findings suggest that while habitat influences the tempo of morphological evolution, it may not always alter the extent of morphological disparity among species.
+
+# Author Contributions
+  The team communicated through messaging. Jax assigned the images, and analyzed the first 8 images, Mee examined the next 7, and John reviewed the final 7. Questions and answers were done equally by all three members throughout the course of the Module. Jax worked heavily on the coding piece of the project, while John and Mee both contributed to the writing section heavily. John found a new source for us to use for the project. Jax created the master document and repository. 
+
+# References 
+
